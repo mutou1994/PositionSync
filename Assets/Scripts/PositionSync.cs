@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Security.Cryptography;
 using UnityEngine;
 using UnityEngine.UI;
+using UnityEngine.UIElements;
 using static TMPro.SpriteAssetUtilities.TexturePacker_JsonArray;
 
 
@@ -64,6 +65,8 @@ public class PositionSync : MonoBehaviour
 
     void Awake()
     {
+        m_LastReportTime = 0;
+        m_LastLentacy = 0;
         m_FingerTouch.AddOnBeginDragHandler(OnMoveBegain);
         m_FingerTouch.AddOnEndDragHandler(OnMoveEnd);
         m_FingerTouch.AddOnDragHandler(OnMoveing);
@@ -87,8 +90,9 @@ public class PositionSync : MonoBehaviour
                 time = Time.realtimeSinceStartup * 1000,
                 isFinal = true,
             };
-            if (Flag == SyncEnum.SmoothDR2 || Flag == SyncEnum.SmoothDR3)
+            if (Flag == SyncEnum.SmoothDR3)
             {
+                
                 positionDatas.Clear();
                 positionDatas.Add(curPosData);
             }
@@ -101,8 +105,12 @@ public class PositionSync : MonoBehaviour
             time = Time.realtimeSinceStartup * 1000,
             isFinal = true,
         };
-        positionDatas.Clear();
-        positionDatas.Add(curPosData);
+        if(Flag == SyncEnum.SmoothDR3)
+        {
+            positionDatas.Clear();
+            positionDatas.Add(curPosData);
+        }
+        
     }
     
     void Update()
@@ -140,7 +148,7 @@ public class PositionSync : MonoBehaviour
         float latency = int.Parse(m_LatencyInput.text);
         float shake = int.Parse(m_ShakeInput.text);
         float _lantency = Random.Range(latency - shake, latency + shake);
-        float minLatency = m_LastReportTime > 0 ? m_LastLentacy - (nowTime - m_LastReportTime) + 10 : 0;
+        float minLatency = m_LastLentacy - (nowTime - m_LastReportTime) + 10;
         if(_lantency <= 0 || _lantency < minLatency)
         {
             _lantency = minLatency;
@@ -160,8 +168,6 @@ public class PositionSync : MonoBehaviour
     void OnMoveBegain()
     {
         m_IsMoving = true;
-        m_LastLentacy = 0;
-        m_LastReportTime = -1;
     }
 
     void OnMoveEnd()
@@ -193,13 +199,14 @@ public class PositionSync : MonoBehaviour
         }
         else
         {
+            bSyncFinished = false;
             if (Flag == SyncEnum.SmoothDR2)
             {
                 DRing = false;
                 recvTime = Time.realtimeSinceStartup * 1000;
                 int count = positionDatas.Count;
 
-                if (!positionDatas[count - 1].isFinal)
+                if (count > 0 && !positionDatas[count - 1].isFinal)
                 {
                     if(Mathf.Approximately(SmoothLeftDis, DrDelta.magnitude) || SmoothLeftDis < DrDelta.magnitude)
                     {
@@ -209,26 +216,33 @@ public class PositionSync : MonoBehaviour
                     {
                         SmoothLeftDis -= DrDelta.magnitude;
                     }
+                    DrDelta = Vector3.zero;
                 }
                 
-                if (!Mathf.Approximately(SmoothLeftDis, 0) && SmoothLeftDis > 0)
+                if (count > 0 && !Mathf.Approximately(SmoothLeftDis, 0) && SmoothLeftDis > 0)
                 {
                     SmoothLeftDis += Vector3.Distance(positionData.position, positionDatas[count - 1].position);
-                    
                 }
                 else
                 {
-                    //TODO 此处可以加一个方向判断 丢弃方向相同 位移相反 后退的点 并且不是最后的终点
+                    //TODO 此处可以加一个方向判断 丢弃方向相同 位移相反 后退的点 并且不是最后的终点                   
                     SmoothLeftDis = Vector3.Distance(positionData.position, m_SyncRole.localPosition);
                 }
-                smoothTime = recvTime - positionData.time + m_PosSyncInterval;
+                smoothTime = Mathf.Min(recvTime - positionData.time, m_MaxLatency) + m_PosSyncInterval;
                 if (!positionData.isFinal)
                 {
-                    DrDelta = (positionData.position - positionDatas[count - 1].position);
                     float deltaTime = m_PosSyncInterval;
-                    if (!positionDatas[count - 1].isFinal)
+                    if(count > 0)
                     {
-                        deltaTime = positionData.time - positionDatas[count - 1].time;
+                        DrDelta = (positionData.position - positionDatas[count - 1].position);
+                        if (!positionDatas[count-1].isFinal)
+                        {
+                            deltaTime = positionData.time - positionDatas[count - 1].time;
+                        }
+                    }
+                    else
+                    {
+                        DrDelta = positionData.position - m_SyncRole.localPosition;
                     }
                     float drTime = Mathf.Min(smoothTime, m_MaxReckoningTime);
                     float magnitude = (DrDelta.magnitude * (drTime / deltaTime));
@@ -275,7 +289,6 @@ public class PositionSync : MonoBehaviour
                 lastPosData = curPosData;
                 curPosData = positionData;
 
-                bSyncFinished = false;
                 startPos = m_SyncRole.localPosition;
                 recvTime = Time.realtimeSinceStartup * 1000;
                 float latency = recvTime - positionData.time;
@@ -336,7 +349,7 @@ public class PositionSync : MonoBehaviour
         m_SyncRole.localEulerAngles = angle;
     }
 
-    bool bSyncFinished = false;
+    bool bSyncFinished = true;
     void SyncPositionSmooth()
     {
         if (bSyncFinished) return;
@@ -431,13 +444,13 @@ public class PositionSync : MonoBehaviour
 
     void SyncPositionSmoothDR2()
     {
-        if (SmoothLeftDis <= 0) return;
+        if (bSyncFinished) return;
         int count = positionDatas.Count;
         float delta = Time.deltaTime * SmoothSpeed;
         SmoothLeftDis -= delta;
         if(SmoothLeftDis < 0 || Mathf.Approximately(SmoothLeftDis, 0))
         {
-            if(!Mathf.Approximately(SmoothLeftDis, 0))
+            if(SmoothLeftDis < 0)
             {
                 delta += SmoothLeftDis;
             }
@@ -447,75 +460,90 @@ public class PositionSync : MonoBehaviour
         if(DRing)
         {
             m_SyncRole.localPosition = curPos + DrDelta.normalized * delta;
+            DrDelta = DrDelta.normalized * (DrDelta.magnitude - delta);
+            var angle = Mathf.Rad2Deg * (Mathf.Atan2(DrDelta.normalized.y, DrDelta.normalized.x) - Mathf.PI * 0.5f);
+            SetAngle(angle);
         }
         else
         {
             int index = -1;
-            for(int i = 0; i < count; i++)
+            if(count > 0)
             {
-                float dis = Vector3.Distance(positionDatas[i].position, curPos);
-                if(delta >= dis || Mathf.Approximately(delta, dis))
+                for(int i = 0; i < count; i++)
                 {
-                    if(Mathf.Approximately(delta, dis))
+                    float dis = Vector3.Distance(positionDatas[i].position, curPos);
+                    if(delta >= dis || Mathf.Approximately(delta, dis))
                     {
-                        delta = 0;
+                        if(Mathf.Approximately(delta, dis))
+                        {
+                            delta = 0;
+                        }
+                        else
+                        {
+                            delta -= dis;
+                        }
+                        index = i;
+                        curPos = positionDatas[i].position;
                     }
                     else
                     {
-                        delta -= dis;
+                        break;
                     }
-                    index = i;
-                    curPos = positionDatas[i].position;
-                }
-                else
-                {
-                    break;
                 }
             }
-            if(index < count - 1)
+            if(count > 0 && index < count - 1)
             {
                 Vector3 dir = positionDatas[index + 1].position - curPos;
                 if(index >= 0)
                 {
-                    float angle = LerpAngle(positionDatas[index].angle, positionDatas[index + 1].angle, delta / dir.magnitude);
+                    //float angle = LerpAngle(positionDatas[index].angle, positionDatas[index + 1].angle, delta / dir.magnitude);
+                    var angle  = Mathf.Rad2Deg * (Mathf.Atan2(dir.y, dir.x) - Mathf.PI * 0.5f);
                     SetAngle(angle);
                     positionDatas.RemoveRange(0, index + 1);
                 }
                 else
                 {
                     //一个都没超 角度以自己为准
+                    var angle = Mathf.Rad2Deg * (Mathf.Atan2(dir.y, dir.x) - Mathf.PI * 0.5f);
+                    SetAngle(angle);
                 }
                 m_SyncRole.localPosition = curPos + dir.normalized * delta;
-                if(SmoothLeftDis <= 0)
+                if (SmoothLeftDis < 0 || Mathf.Approximately(SmoothLeftDis, 0))
                 {
+                    //理论上这里逻辑应该不会进来 进来了说明SmoothLeftDis在前面逻辑被多减了。这里做个异常处理 加回后续路程。
                     SmoothLeftDis += Vector3.Distance(m_SyncRole.localPosition, positionDatas[0].position);
-                    for(int i=0;i < positionDatas.Count-1; i ++)
+                    for (int i = 0; i < positionDatas.Count - 1; i++)
                     {
                         SmoothLeftDis += Vector3.Distance(positionDatas[i].position, positionDatas[i + 1].position);
                     }
-                    if(!positionDatas[positionDatas.Count-1].isFinal)
+                    if (!positionDatas[positionDatas.Count - 1].isFinal)
                     {
                         SmoothLeftDis += DrDelta.magnitude;
                     }
+                    Debug.LogWarning("RepairSmoothLeftDis:" + positionDatas.Count + " Left:" + SmoothLeftDis);
                 }
             }
             else
             {
-                if (!positionDatas[count - 1].isFinal)
-                {
-                    DRing = true;
-                    m_SyncRole.localPosition = curPos + DrDelta.normalized * delta;
+                if(count > 0)
+                { 
+                    if (!positionDatas[count - 1].isFinal)
+                    {
+                        DRing = true;
+                        m_SyncRole.localPosition = curPos + DrDelta.normalized * delta;
+                        DrDelta = DrDelta.normalized * (DrDelta.magnitude - delta);
+                        var angle = Mathf.Rad2Deg * (Mathf.Atan2(DrDelta.normalized.y, DrDelta.normalized.x) - Mathf.PI * 0.5f);
+                        SetAngle(angle);
+                    }
+                    else
+                    {
+                        bSyncFinished = true;
+                        m_SyncRole.localPosition = positionDatas[count - 1].position;
+                        DrDelta = Vector3.zero;
+                        SetAngle(positionDatas[count - 1].angle);
+                    }
                 }
-                else
-                {
-                    m_SyncRole.localPosition = positionDatas[count - 1].position;
-                    
-                }
-                SetAngle(positionDatas[count - 1].angle);
-                if(count > 1)
-                {
-                    positionDatas.RemoveRange(0, count-1);
-                }
+                positionDatas.Clear();
             }
         }
     }
@@ -530,7 +558,7 @@ public class PositionSync : MonoBehaviour
 
     float LerpAngle(float src, float tgt, float rate)
     {
-        return tgt;
+        //return tgt;
         float offset = tgt - src;
         if (offset < -180)
         {
